@@ -28,8 +28,8 @@ public class GPT4ModelAdapter: ModelAdapter {
     // MARK: - Initialization
     
     /// Initializes the GPT-4 adapter with an API key.
-    public init(apiKey: String = Secrets.openAIAPIKey, model: AIModel = .gpt4o) {
-        self.apiKey = apiKey
+    public init(apiKey: String? = nil, model: AIModel = .gpt4o) {
+        self.apiKey = apiKey ?? Secrets.openAIAPIKey
         self.model = model
     }
     
