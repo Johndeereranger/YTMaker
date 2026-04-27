@@ -1,0 +1,16 @@
+# Secrets — API keys, never commit
+NewAgentBuilder/AIStuff/Secrets.swift
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcbkptlist
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.build/
+Package.resolved

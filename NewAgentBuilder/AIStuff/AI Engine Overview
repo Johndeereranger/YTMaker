@@ -1,0 +1,347 @@
+//
+//  for.swift
+//  NewAgentBuilder
+//
+//  Created by Byron Smith on 6/2/25.
+//
+//
+//
+```markdown
+# AIEngine Framework (Swift)
+
+⚠️ **CRITICAL SECURITY WARNING**
+API keys are currently **hardcoded inside provider adapters**.
+**DO NOT commit this code publicly.** Treat this repository as unsafe until keys are injected properly.
+
+---
+
+## What This Is
+
+**AIEngine** is a **provider-agnostic Swift execution layer** for running AI requests against multiple vendors through a shared adapter interface.
+
+It supports:
+- Single prompt → text
+- Single prompt → response bundle (tokens, model, finish reason)
+- Image analysis by URL
+- Limited “batch-like” helpers (⚠️ see notes)
+
+It **does NOT**:
+- manage agents
+- manage workflows
+- manage sessions
+- persist anything
+
+All orchestration, state, and persistence live **above** this layer (e.g. `AgentRunnerViewModel`, manual ingestion views, etc.).
+
+---
+
+## Mental Model
+
+```
+
+App / Orchestration Layer
+├─ Manual Ingestion (A1a / A1b / A1c)
+├─ AutoRun Views
+├─ AgentRunnerViewModel
+└─ Persistence (Firestore / Local)
+↓
+AIEngine
+↓
+ModelAdapter
+(OpenAI | Claude | Azure | Grok*)
+↓
+Provider API
+
+````
+
+**AIEngine only routes requests and returns results.**
+
+---
+
+## Two Valid Ways to Use AIEngine
+
+### 1️⃣ Agent-Based Execution (Persisted)
+
+Used by AutoRun flows and production pipelines.
+
+Flow:
+1. Load a stored `Agent`
+2. Create a `ChatSession`
+3. Execute `PromptStep`s sequentially
+4. Persist each `PromptRun`
+
+AIEngine is called **inside** the runner.
+
+---
+
+### 2️⃣ Transient / Manual Execution (NO Agent ID)
+
+Used by:
+- Manual ingestion (A1a / A1b / A1c)
+- One-off tools
+- Parsing and ingestion pipelines
+
+**Key idea:**
+You can construct a **fake / transient Agent and PromptStep entirely in memory** and still run through the same execution pipeline.
+
+No Firestore.
+No agent ID.
+No refactor required.
+
+---
+
+## Quick Start
+
+### Simple text generation
+
+```swift
+let engine = AIEngine(model: .claude35Sonnet)
+
+let response = await engine.run(
+    prompt: "Explain quantum entanglement",
+    promptBackgroundInfo: "You are a physics professor"
+)
+````
+
+---
+
+### Response with metadata
+
+```swift
+let bundle = await engine.runWithBundle(
+    prompt: "Explain quantum entanglement",
+    promptBackgroundInfo: "You are a physics professor"
+)
+
+print(bundle?.totalTokens ?? 0)
+```
+
+---
+
+## Core Concepts
+
+### AIModel
+
+`AIModel` is a strongly typed enum representing **model + provider**.
+
+```swift
+public var provider: String {
+    if rawValue.starts(with: "gpt") { return "openai" }
+    if rawValue.starts(with: "claude") { return "claude" }
+    if rawValue.starts(with: "azure") { return "azure" }
+    if rawValue.starts(with: "grok") { return "grok" }
+    return "unknown"
+}
+```
+
+---
+
+### AIEngine
+
+`AIEngine` selects a provider adapter at initialization:
+
+* `openai` → `GPT4ModelAdapter`
+* `claude` → `ClaudeModelAdapter`
+* `azure` → `AzureOpenAIModelAdapter`
+* `grok` → OpenAI fallback (stub)
+
+---
+
+### ModelAdapter
+
+Every provider adapter conforms to `ModelAdapter` and implements:
+
+* `generate_response(...) -> String`
+* `generate_response_bundle(...) -> AIResponseBundle?`
+* `generate_batch_response(...) -> [String]`
+* `analyzeImageURL(...) -> AIResponseBundle?`
+
+Adapters own request formatting, retries, headers, and parsing.
+
+---
+
+### AIResponseBundle
+
+Returned when metadata is required.
+
+Includes:
+
+* response content
+* model used
+* finish reason
+* token usage
+* cached token counts (when supported)
+
+---
+
+## Image Analysis (URL)
+
+```swift
+let engine = AIEngine(model: .claude35Sonnet)
+
+let bundle = await engine.analyzeImage(
+    url: "https://example.com/image.jpg",
+    prompt: "Describe the scene and visible text",
+    promptBackgroundInfo: "Be literal",
+    params: ["max_tokens": 800]
+)
+```
+
+---
+
+## Claude Cache Support
+
+```swift
+let engine = AIEngine(model: .claude35Sonnet)
+
+let bundle = await engine.runWithCacheSupport(
+    prompt: "Answer question 7 using the same rules",
+    reusableContext: largeSystemText,
+    params: ["max_tokens": 1200]
+)
+```
+
+Non-Claude adapters fall back to normal execution.
+
+---
+
+## File Overview
+
+### AIEngine.swift
+
+* `run`
+* `runWithBundle`
+* `runBatch`
+* `analyzeImage`
+* `runWithCacheSupport`
+
+### AIModel.swift
+
+* Model registry
+* Provider routing logic
+
+### ModelAdapter.swift
+
+* Adapter protocol
+
+### GPT4ModelAdapter.swift ⚠️
+
+* Some paths hardcode `gpt-4o`
+* Batch returns a single response
+* Image analysis hardcodes model
+
+### ClaudeModelAdapter.swift
+
+* Retry with exponential backoff
+* Image analysis
+* Cache support
+
+---
+
+## Critical Notes
+
+### 1️⃣ API keys are hardcoded
+
+Inject keys via initializer or secure storage.
+
+### 2️⃣ Batch is not real batch
+
+OpenAI batch → one assistant response.
+
+### 3️⃣ Model selection is inconsistent
+
+Some paths ignore `model.rawValue`.
+
+### 4️⃣ Grok is a stub
+
+Routes to OpenAI fallback.
+
+---
+
+## ⚡ ASYNC EXECUTION RULES
+
+When making multiple independent AI calls, **DEFAULT TO PARALLEL** using `withTaskGroup`.
+
+Only use sequential if:
+- Order matters (output of call N is input to call N+1)
+- Debugging requires predictable ordering
+
+### ✅ CORRECT - Parallel (use this)
+
+```swift
+await withTaskGroup(of: ResultType?.self) { group in
+    for item in items {
+        group.addTask {
+            try? await self.processItem(item)
+        }
+    }
+
+    for await result in group {
+        if let result = result {
+            results.append(result)
+        }
+    }
+}
+```
+
+### ❌ WRONG - Sequential (avoid unless order matters)
+
+```swift
+for item in items {
+    let result = await processItem(item)  // SEQUENTIAL - 5x slower for 5 items
+    results.append(result)
+}
+```
+
+### Why This Matters
+
+- 5 sequential API calls = 5x the wait time
+- 5 parallel API calls = ~1x the wait time (all run concurrently)
+- Fidelity tests, batch processing, multi-video analysis should ALL be parallel
+
+---
+
+## AgentRunner & AutoRun
+
+AutoRun views are **app-layer orchestration**.
+
+```swift
+var input = initialInput
+
+for step in promptSteps {
+    let run = await runner.runCall(
+        method: .normal(input: input),
+        run: dummyRun,
+        overridePrompt: step.prompt
+    )
+    input = run.response
+}
+```
+
+Each step is a pure transform.
+
+---
+
+## Manual Ingestion (A1a / A1b / A1c)
+
+Manual ingestion does **not** require stored agents.
+
+* Build a transient Agent
+* Add one PromptStep
+* Execute via `AgentRunnerViewModel`
+* Discard afterward
+
+Execution parity without persistence coupling.
+
+---
+
+## Glossary
+
+* **Adapter** – Provider-specific implementation
+* **AIEngine** – Routing & execution layer
+* **Agent** – Workflow definition (persisted or transient)
+* **ChatSession** – Execution context (real or fake)
+* **Runner** – Executes steps using AIEngine
+
+```
+```

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow_file_edit": true,
+    "allow_file_create": true,
+    "allow_bash": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"$CLAUDE_PROJECT_DIR\"/CLAUDE.md"
+          }
+        ]
+      }
+    ]
+  }
+}
